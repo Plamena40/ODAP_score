@@ -1,0 +1,443 @@
+---
+fontsize: 10pt
+geometry: margin=1cm
+graphics: yes
+mainfont: Times New Roman
+output:
+  pdf_document:
+    keep_tex: no
+    number_sections: yes
+  word_document: default
+---
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = "/Users/plamena/Desktop/Organ retrieval")
+```
+
+```{r test_image,  echo = FALSE, out.width = '90%', out.height = '50%', fig.align = 'left'}
+knitr::include_graphics("uchicago_logo.png")
+```
+
+\large__Predicting consent for organ donation: Development of the Organ Donation Approach Prioritization Score (ODAP Score)__
+\begin{tabular}{@{}llll}
+Investigators: & Plamena P. Powla, MS & Deekshitha Turaka, MD\\
+Analyst: & Plamena P. Powla, MS\\
+Date: & `r format(Sys.time(), '%B %d, %Y')`\\
+\end{tabular}
+
+<!-- Add a horizontal line -->
+\noindent\rule{\textwidth}{1pt}
+
+<!-- Add table of contents -->
+\tableofcontents
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F) 
+# this removes the code used from the html output
+# make a REDCap calculation that measures the time a pt spend in the NICU.
+```
+
+```{r loading packages, message=FALSE, warning=FALSE}
+library(REDCapR)
+library(DT)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)  
+library(plotly) 
+library(gtsummary) 
+library(circlize)
+library(MatchIt) 
+library(lmtest)
+library(sandwich)
+library(emmeans)
+library(survival)
+library(dplyr)
+library(tidyr)
+library(MLeval)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(gtsummary)
+library(caret)
+library(pROC)
+library(ROCR)
+library(ROSE)
+library(xgboost)
+library(randomForest)
+library(ResourceSelection)
+library(PresenceAbsence)
+library(ggthemes)
+library(gridExtra)
+library(sda)
+library(gam)
+library(flextable, warn.conflicts = FALSE)
+library(rms)
+library(CalibrationCurves)
+```
+
+```{r loading data, message=FALSE, warning=FALSE}
+# rm(list = ls())
+df <- read.csv("/Users/plamena/Desktop/Organ retrieval/opd.csv")
+
+df$authorized_bin <- ifelse(df$authorized == "True", 1,
+                     ifelse(df$authorized == "False", 0, NA))
+
+df$authorized_cat <- ifelse(df$authorized == "True", "Consent to donate",
+                     ifelse(df$authorized == "False", "Did not consent", NA))
+
+df$Black <- ifelse(df$Race == "Black / African American", 1, 0)
+
+df$Age <- ifelse(df$Age == 100, NA, df$Age)
+
+df$self_inflicted <- ifelse(df$Circumstances_of_Death == "Suicide" |
+                            df$Circumstances_of_Death == "Alleged Suicide", 1, 0)
+
+df$self_inflicted_cat <- ifelse(df$Circumstances_of_Death == "Suicide" |
+                            df$Circumstances_of_Death == "Alleged Suicide", "suicide", "not suicide")
+
+df$homicide <- ifelse(df$Circumstances_of_Death == "Homicide" |
+                      df$Circumstances_of_Death == "Alleged Homicide", 1, 0)
+
+df$Other_circumstance <- ifelse(df$Circumstances_of_Death == "Accident, Non-MVA" |
+                                df$Circumstances_of_Death == "None of the Above", 1, 0)
+
+df$Circumstances_of_Death2 <- ifelse(df$Circumstances_of_Death == "Suicide", "Suicide",
+                              ifelse(df$Circumstances_of_Death == "Homicide", "Homicide",
+                              ifelse(df$Circumstances_of_Death == "Accident, Non-MVA" |
+                                     df$Circumstances_of_Death == "None of the Above", "Other", NA)))
+
+df$TBI_Mechanism <- ifelse(df$Mechanism_of_Death == "Gun Shot Wound" | 
+                           df$Mechanism_of_Death == "Gunshot Wound", "Gun shot wound",
+                    ifelse(df$Mechanism_of_Death == "Blunt Injury", "Blunt injury", NA))
+
+df$Circumstances_of_Death2 <- relevel(factor(df$Circumstances_of_Death2), "Other")
+
+df$Race <- relevel(factor(df$Race), "White / Caucasian")
+
+df$Gender <- ifelse(df$Gender == "F", "Female",
+             ifelse(df$Gender == "M", "Male", NA))
+
+df$time_of_death <- ifelse(df$brain_death == "True", df$time_brain_death,
+                    ifelse(df$brain_death == "False", df$time_asystole, NA))
+
+df$weekend <- ifelse(df$Referral_DayofWeek == "Saturday" | 
+                         df$Referral_DayofWeek == "Sunday", 1, 0)
+```
+
+```{r}
+df$days_to_approach <- as.Date(df$time_approached)-as.Date(df$time_of_death)
+
+df$approach_at_bd <- ifelse(df$days_to_approach == 0, 1,
+                     ifelse(df$days_to_approach != 0, 0, NA))
+
+df$days_to_procure <- as.Date(df$time_procured)-as.Date(df$time_of_death)
+
+df$hours_to_approach <- difftime(ymd_hms(df$time_approached), ymd_hms(df$time_of_death), units = "hours")
+
+df$hours_to_referral <- difftime(ymd_hms(df$time_referred), ymd_hms(df$time_of_death), units = "hours")
+
+df$hours_to_approach_cat5 <- ifelse(df$hours_to_approach >= 0, "After death",
+                             ifelse(df$hours_to_approach < 0, "Before death", NA))
+
+df$hours_to_referral_cat <- ifelse(df$hours_to_referral >= 0, "After death",
+                             ifelse(df$hours_to_referral < 0, "Before death", NA))
+
+df$death_type <- ifelse(df$brain_death == "True", "Brain death",
+                 ifelse(df$brain_death == "False", "Cardiac death", NA))
+```
+
+```{r}
+df$authorized_cat2 <- ifelse(df$authorized_bin == 1, "Yes",
+                      ifelse(df$authorized_bin == 0, "No", NA))
+
+df$Age_group <- ifelse(df$Age >= 65, "Older adult", "Adult")
+df$Age_group_bin <- ifelse(df$Age >= 65, 1, 0)
+
+df_no_na <- df %>% filter(!is.na(authorized_cat) & 
+                          !is.na(Circumstances_of_Death2) &
+                          !is.na(death_type) &
+                          !is.na(hours_to_approach_cat5) & 
+                          !is.na(Age))
+
+approached <- df_no_na %>% filter(approached == "True") %>%
+                         filter(hours_to_approach <= 12 & hours_to_approach >= -12) %>%
+                         filter(Age >=18)
+```
+
+# Descriptive tables
+
+## Table 1
+**Table 1. Descriptive characteristics of adult patients approached for organ donation**
+```{r, warning=FALSE}
+subset(approached, select = c(authorized_cat, Age, Age_group, Gender, Race,
+                              Circumstances_of_Death2, death_type,
+                              hours_to_approach_cat5, weekend)) %>%
+
+gtsummary::tbl_summary(
+                  by = authorized_cat,
+                  percent = "col", 
+                  statistic = list(all_continuous() ~ "{median} ({p25}, {p75})",
+                     all_categorical() ~ "{n} ({p}%)"),
+                  missing = "no",
+                  missing_text = "NA",
+                  digits=list(all_continuous() ~ c(0, 1), all_categorical() ~ c(0, 1)),
+                  label = list(
+                      Circumstances_of_Death2 ~ "Circumstance of death",
+                      Age_group ~ "Age group",
+                      hours_to_approach_cat5 ~ "Time approached",
+                      death_type ~ "Brain or cardiac death",
+                      weekend ~ "Family approached on the weekend"
+                  )) %>%
+                gtsummary::modify_header(label = "**Characteristics**") %>%
+                gtsummary::modify_header(all_stat_cols() ~ "**{level}**, N = {n}") %>%
+                gtsummary::bold_labels() %>%
+                gtsummary::add_overall() %>%
+                gtsummary::add_p() %>%
+                gtsummary::as_flex_table() %>% 
+                flextable::align(align = "left", part = "all")
+```
+\newpage 
+
+**Logistic regression**
+```{r, warning=F, message=F, include=T}
+glm1 <- glm(authorized_bin ~ Age_group + Circumstances_of_Death2 + death_type +
+                           hours_to_approach_cat5, 
+                          data = approached,
+                          family = binomial())
+
+glm1 %>% 
+                gtsummary::tbl_regression(
+                  exponentiate = TRUE, 
+                  label = list()) %>%
+                # gtsummary::add_global_p(test = "LR") %>%
+                gtsummary::bold_labels() %>%
+                gtsummary::add_n() %>%
+                gtsummary::as_flex_table() %>%
+                flextable::align(align = "left", part = "all")
+```
+
+
+# Elastic net
+```{r, warning=F, message=F, include=F}
+ctrl <- trainControl(method = "CV", number=10,
+                     classProbs = TRUE, summaryFunction = twoClassSummary,
+                     verboseIter = T, savePredictions = T, returnResamp = "final")
+
+elastic_net_mod <- train(authorized_cat2 ~ Circumstances_of_Death2 + death_type +
+                           hours_to_approach_cat5 + Age_group,
+               data = approached, method = "glmnet",
+               trControl = ctrl, metric = "ROC"#,
+             # preProcess = c("center","scale")
+               )
+
+evalm(elastic_net_mod)
+
+coef(elastic_net_mod$finalModel, elastic_net_mod$bestTune$lambda)
+```
+Table X Predictors for the likelihood of organ donation consent identified by elastic net
+
+```{r, warning=F, message=F, include=F, eval=F}
+mod_boot <- list(NULL)
+roc <- list(NULL)
+mod_ev <- list(NULL)
+stdres <- list(NULL)
+
+for (i in 1:200){
+  sample <- approached[sample(1:nrow(approached), size=nrow(approached), replace=T),]
+  test <- approached[-sample(1:nrow(approached), size=nrow(approached), replace=T),]
+  mod_boot[[i]] <- train(authorized_cat2 ~ Circumstances_of_Death2 + death_type +
+                           hours_to_approach_cat5 + Age_group,
+               data = sample, method = "glmnet", family = "binomial", metric = "ROC",
+               trControl = ctrl,
+               preProcess = c("center","scale"))
+  
+    mod_ev[[i]] <- evalm(mod_boot[[i]])
+    stdres[[i]] <- mod_ev[[i]]$stdres
+    roc[[i]] <- stdres[[i]]$`Group 1`["AUC-ROC","Score"]
+}
+
+auroc <- rowMeans(data.frame(roc))
+```
+Bootstrapped AUROC: 0.81585
+
+```{r, eval=F}
+coef(elastic_net_mod$finalModel, elastic_net_mod$bestTune$lambda)[,1]/(0.6682342)
+
+coef(elastic_net_mod$finalModel, elastic_net_mod$bestTune$lambda)[,1]/(0.6682342/2.8)
+```
+
+```{r, warning=F, message=F, include=T}
+approached$cardiac_death <- ifelse(approached$death_type=="Cardiac death", 1, 
+                           ifelse(approached$death_type=="Brain death", 0, NA))
+
+approached$before_bd <- ifelse(approached$hours_to_approach_cat5=="Before death", 1,
+                        ifelse(approached$hours_to_approach_cat5=="After death", 0, NA))
+
+approached$score <- approached$homicide*-4+approached$cardiac_death*-15+approached$before_bd*3+approached$Age_group_bin*-3
+
+approached$score_prediction <- round(1/(1+exp(-1*(2.5939098+(0.2386551*(approached$score))))), 3)
+
+#hoslem.test(approached$true_mortality_bin, elastic_net_predictions, g=10)
+
+approached$score2 <- approached$score+22
+```
+**Score chart for the probability of
+consent for organ donation**
+
+\begin{table}
+\begin{tabular}[t]{r|r|r}
+\hline
+& Components of the ODAP Score & \\
+\hline
+
+Score component & & Score points\\
+\hline
+Circumstance of death & & \\
+ & Homicide or suicide & 0\\
+ & Other & 4\\
+
+Type of death & & \\
+ & Cardiac death & 0 \\
+& Brain death & 15\\
+
+Age & & \\
+ & Older adult & 0 \\
+ & Adult & 3 \\
+ 
+ Approach time & & \\
+ & After brain death declaration & 0 \\
+ & Before brain death declaration & 3\\
+
+\hline
+\end{tabular}
+\end{table}
+
+
+
+```{r, eval=F}
+library(ggplot2)
+# Basic scatter plot
+ggplot(approached, aes(x=score2, y=score_prediction)) + geom_point() +
+  scale_x_continuous(breaks = c(0,3,4,6,7,10,15,18,19,21,22,25)) +
+  scale_y_continuous(name = "Probability of Consent to Organ Donation",
+                     breaks = seq(0, 1, .1), 
+                     labels = scales::percent(seq(0, 1, .1))) + xlab("ODAP Score") + ggtitle("ODAP Score and Probability of Consent")
+```
+
+```{r, warning=F, message=F, include=T}
+calibration <- subset(approached, select = c(score_prediction, authorized_bin))
+# This is a dataset with only the predicted values and observed survival
+```
+
+```{r, warning=F, message=F, include=T}
+val.prob.ci.2(calibration[,1], calibration[,2])
+```
+```{r}
+ggplot() +
+  geom_abline(slope = 1, intercept = 0) +
+  geom_smooth(data = approached, aes(score_prediction, authorized_bin),
+              method = "loess", formula = 'y ~ x',
+              se=FALSE, color = "steelblue") +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1)) +
+  xlab("Expected Probability") +
+  ylab("Observed Probability") + 
+  theme_minimal() +
+  annotate(geom="text", x=.6, y=.1, label="Calibration:", color="black", size = 5) +
+  annotate(geom="text", x=.75, y=.025, label="Intercept = -0.03 (-0.14, 0.08)", color="black", size = 5) +
+  annotate(geom="text", x=.72, y=-.05, label="Slope = 1.07 (0.99, 1.15)", color="black", size = 5)
+```
+
+```{r}
+# Basic scatter plot
+ggplot(approached, aes(x=score2, y=score_prediction)) + geom_point() +
+  scale_x_continuous(breaks = c(0,3,4,6,7,10,15,18,19,21,22,25)) +
+  scale_y_continuous(name = "Probability of Consent for Organ Donation",
+                     breaks = seq(0, 1, .1), 
+                     labels = scales::percent(seq(0, 1, .1))) + 
+  xlab("ODAP Score") + ggtitle("ODAP Score and Probability of Consent") + theme(plot.title = element_text(hjust = 0.45))
+```
+
+```{r}
+Score <- c("0", "3", "4", "6", "7", "10", "15", "18", "19", "21", "22", "25")
+N <- c("2","6","60","20","115","307","4", "205", "174","22", "1926","297")
+Predicted_probability <- c("0.066","0.126", "0.154", "0.227", "0.272", "0.433", "0.716", "0.837", "0.867", "0.913", "0.93", "0.965")
+Observed_probability <- c("0","0.167","0", "0.150", "0.243","0.430", "1.000", "0.820", "0.885", "0.955", "0.933", "0.963")
+
+df_table <- data.frame(Score, N, Predicted_probability, Observed_probability)
+
+
+flextable(df_table) %>%
+                flextable::autofit() %>%
+                flextable::theme_vanilla() %>%
+                flextable::bg(bg = "lightgrey", part = "header") %>%
+                flextable::bg(bg = "white", i = c(1:12)) %>%
+                set_header_labels(
+                  Score = "Score",
+                  Predicted_probability = "Predicted probability",
+                  Observed_probability = "Observed probability")
+```
+
+```{r}
+approached$score_cat <- ifelse(approached$score2 >=15, "High",
+                        ifelse(approached$score2 <=10 & approached$score2 >=10, "Moderate",
+                        ifelse(approached$score2 <=7, "Low", NA)))
+```
+
+```{r}
+approached$score_cat_cutoff <- ifelse(approached$score_cat == "Moderate" | 
+                                      approached$score_cat == "High", 1,
+                               ifelse(approached$score_cat == "Low", 0, NA))
+
+confusionMatrix(as.factor(approached$score_cat_cutoff), as.factor(approached$authorized_bin))
+
+
+approached$score_cat_cutoff2 <- ifelse(approached$score_cat == "High", 1,
+                                ifelse(approached$score_cat == "Low" | 
+                                      approached$score_cat == "Moderate", 0, NA))
+
+confusionMatrix(as.factor(approached$score_cat_cutoff2), as.factor(approached$authorized_bin))
+
+approached$score_cat_cutoff3 <- ifelse(approached$score_prediction >.9,1, 0)
+
+confusionMatrix(as.factor(approached$score_cat_cutoff3), as.factor(approached$authorized_bin))
+
+
+```
+
+```{r}
+Score <- c("0-7", "10", "15-25")
+N <- c("203", "307", "2,628")
+Category <- c("Low", "Moderate", "High")
+Predicted_probability <- c("22.6", "43.3", "92.2")
+Observed_probability <- c("15.8","43.0","92.4")
+Sensitivity <- c("", "0.31", "0.63")
+Specificity <- c("", "0.99", "0.94")
+Accuracy <- c("", "0.87", "0.88")
+
+df_table <- data.frame(Score, Category, N, Predicted_probability, Observed_probability, Accuracy, Sensitivity, Specificity)
+
+flextable(df_table) %>%
+                flextable::autofit() %>%
+                flextable::theme_vanilla() %>%
+                flextable::bg(bg = "lightgrey", part = "header") %>%
+                flextable::bg(bg = "white", i = c(1:3)) %>%
+                set_header_labels(
+                  Score = "Score",
+                  Predicted_probability = "Predicted probability",
+                  Observed_probability = "Observed probability")
+```
+
+
+
+
+
+
+
